@@ -1,0 +1,460 @@
+---
+- name: Deploy VM on DreamCompute and configure full stack
+  hosts: localhost
+  gather_facts: no
+  vars:
+    # VM Configuration
+    vm_name: "restream"
+    image: "Debian-12"
+    flavor: "gp1.semisonic"
+    volume_size: 100
+    key_name: "deploy"
+    network: "public"
+    cloud: "dreamcompute"
+
+    # SSH Key paths
+    deploy_key_path: "~/.ssh/deploy.pem"
+
+    # Domain name
+    domain: "restream.koyori.club"
+
+    # Bazaar page
+    bazaar_streams:
+      - sg4e
+      - sp0ck1
+      - theo
+      - yimmo
+    grid_columns: 2
+
+    # Nginx Configuration
+    nginx_config_src: "./nginx.conf.j2"
+    nginx_config_dest: "/etc/nginx/nginx.conf"
+
+    # MediaMTX Configuration
+    mediamtx_version: "1.17.1"
+    mediamtx_url: "https://github.com/bluenviron/mediamtx/releases/download/v{{ mediamtx_version }}/mediamtx_v{{ mediamtx_version }}_linux_amd64.tar.gz"
+    mediamtx_user: "mediamtx"
+    mediamtx_config_template: "./mediamtx.yml.j2"
+
+    # WebRTC Page
+    webrtc_page_src: "./webrtc-page"
+    webrtc_page_dest: "/var/www/webrtc-page"
+
+    # Recordings directory
+    recordings_dir: "/var/www/recordings"
+
+  tasks:
+    - name: Set facts for use in other plays
+      set_fact:
+        recordings_dir: "{{ recordings_dir }}"
+        mediamtx_user: "{{ mediamtx_user }}"
+        nginx_config_src: "{{ nginx_config_src }}"
+        nginx_config_dest: "{{ nginx_config_dest }}"
+        webrtc_page_src: "{{ webrtc_page_src }}"
+        webrtc_page_dest: "{{ webrtc_page_dest }}"
+        mediamtx_url: "{{ mediamtx_url }}"
+        mediamtx_config_template: "{{ mediamtx_config_template }}"
+        vm_ip: ""
+        domain: "{{ domain }}"
+        bazaar_streams: "{{ bazaar_streams }}"
+        grid_columns: "{{ grid_columns}}"
+
+    - name: Check if VM already exists
+      openstack.cloud.server_info:
+        cloud: "{{ cloud }}"
+        name: "{{ vm_name }}"
+      register: server_check
+
+    - name: Create VM with boot volume
+      openstack.cloud.server:
+        cloud: "{{ cloud }}"
+        state: present
+        name: "{{ vm_name }}"
+        flavor: "{{ flavor }}"
+        key_name: "{{ key_name }}"
+        network: "{{ network }}"
+        boot_from_volume: true
+        image: "{{ image }}"
+        volume_size: "{{ volume_size }}"
+        terminate_volume: true
+        wait: yes
+        timeout: 600
+      when: server_check.servers | length == 0
+      register: vm_creation
+
+    - name: Get VM information
+      openstack.cloud.server_info:
+        cloud: "{{ cloud }}"
+        name: "{{ vm_name }}"
+      register: vm_info
+
+    - name: Extract VM IPv4 address (filter out IPv6)
+      set_fact:
+        vm_ip: "{{ vm_info.servers[0].addresses.public | selectattr('version', 'equalto', 4) | map(attribute='addr') | first }}"
+      when: vm_info.servers | length > 0
+
+    - name: Display VM IPv4 address
+      debug:
+        msg: "VM IPv4 address: {{ vm_ip }}"
+
+    - name: Wait for SSH to become available
+      wait_for:
+        host: "{{ vm_ip }}"
+        port: 22
+        timeout: 300
+        delay: 10
+
+    - name: Add VM to temporary inventory with SSH auto-trust
+      add_host:
+        name: "{{ vm_ip }}"
+        groups: deployed_vms
+        ansible_user: "debian"
+        ansible_ssh_private_key_file: "{{ deploy_key_path }}"
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+        ansible_python_interpreter: /usr/bin/python3
+
+- name: Initial system setup and package updates
+  hosts: deployed_vms
+  gather_facts: yes
+  become: yes
+  vars:
+    recordings_dir: "{{ hostvars['localhost']['recordings_dir'] }}"
+    mediamtx_user: "{{ hostvars['localhost']['mediamtx_user'] }}"
+    volume_size: "{{ hostvars['localhost']['volume_size'] }}"
+
+  tasks:
+    - name: Add all SSH keys from ssh_keys directory (if any exist)
+      authorized_key:
+        user: "debian"
+        state: present
+        key: "{{ lookup('file', item) }}"
+      with_fileglob:
+        - "./ssh_keys/*.pub"
+      register: ssh_keys_added
+      ignore_errors: yes
+
+    - name: Display number of additional SSH keys added
+      debug:
+        msg: "Added {{ ssh_keys_added.results | length }} additional SSH keys"
+      when: ssh_keys_added is defined and ssh_keys_added.results is defined
+
+    - name: No additional SSH keys found
+      debug:
+        msg: "No additional SSH keys found in ./ssh_keys/ directory. Using only the deploy key."
+      when: ssh_keys_added is not defined or ssh_keys_added.results | length == 0
+
+    - name: Create mediamtx user (early for recordings directory)
+      user:
+        name: "{{ mediamtx_user }}"
+        system: yes
+        shell: /usr/sbin/nologin
+        home: /opt/mediamtx
+        create_home: yes
+        state: present
+      register: user_created
+
+    - name: Check disk space (verify {{ volume_size }}GB volume)
+      command: df -h /
+      register: disk_space
+      changed_when: false
+
+    - name: Display disk space
+      debug:
+        msg: "{{ disk_space.stdout_lines }}"
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      register: apt_update
+
+    # This can be a long step in the deploy process.
+    # Instead, you can update all packages manually later at your convenience.
+    # - name: Upgrade all packages
+    #   apt:
+    #     upgrade: dist
+    #     autoremove: yes
+    #     update_cache: no
+    #   register: apt_upgrade
+
+    - name: Install monitoring and networking tools
+      apt:
+        name:
+          - nload
+          - iftop
+          - net-tools
+          - rsync
+        state: present
+        update_cache: yes
+      register: tools_installed
+
+    - name: Create recordings directory
+      file:
+        path: "{{ recordings_dir }}"
+        state: directory
+        owner: "{{ mediamtx_user }}"
+        group: "{{ mediamtx_user }}"
+        mode: '0775'
+      register: recordings_dir_created
+
+    - name: Configure sysctl for larger receive buffer
+      sysctl:
+        name: net.core.rmem_max
+        value: '1048576'
+        state: present
+        reload: yes
+      register: sysctl_config
+
+    - name: Check if reboot is required
+      stat:
+        path: /var/run/reboot-required
+      register: reboot_required
+
+    - name: Reboot the system if needed
+      reboot:
+        reboot_timeout: 300
+        pre_reboot_delay: 5
+        post_reboot_delay: 30
+      when: reboot_required.stat.exists
+
+    - name: Wait for system to come back after reboot
+      wait_for_connection:
+        delay: 10
+        timeout: 300
+      when: reboot_required.stat.exists
+
+- name: Install and configure Nginx
+  hosts: deployed_vms
+  gather_facts: yes
+  become: yes
+  vars:
+    nginx_config_src: "{{ hostvars['localhost']['nginx_config_src'] }}"
+    nginx_config_dest: "{{ hostvars['localhost']['nginx_config_dest'] }}"
+    webrtc_page_src: "{{ hostvars['localhost']['webrtc_page_src'] }}"
+    webrtc_page_dest: "{{ hostvars['localhost']['webrtc_page_dest'] }}"
+    recordings_dir: "{{ hostvars['localhost']['recordings_dir'] }}"
+    domain: "{{ hostvars['localhost']['domain'] }}"
+    bazaar_streams: "{{ hostvars['localhost']['bazaar_streams'] }}"
+    grid_columns: "{{ hostvars['localhost']['grid_columns'] }}"
+
+  tasks:
+    - name: Install Nginx
+      apt:
+        name: nginx
+        state: present
+      register: nginx_install
+
+    - name: Remove default nginx site symlink
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: restart nginx
+
+    - name: Create webrtc-page directory on remote host
+      file:
+        path: "{{ webrtc_page_dest }}"
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: '0755'
+
+    - name: Deploy WebRTC index page from template
+      template:
+        src: "webrtc-page/index.html.j2"
+        dest: "/var/www/webrtc-page/index.html"
+        owner: www-data
+        group: www-data
+        mode: '0644'
+
+    - name: Deploy WebRTC bazaar page from template
+      template:
+        src: "webrtc-page/bazaar.html.j2"
+        dest: "/var/www/webrtc-page/bazaar.html"
+        owner: www-data
+        group: www-data
+        mode: '0644'
+
+    - name: Fix ownership on remote
+      file:
+        path: "{{ webrtc_page_dest }}"
+        owner: www-data
+        group: www-data
+        recurse: yes
+
+    - name: Copy Nginx configuration file
+      template:
+        src: "{{ nginx_config_src }}"
+        dest: "{{ nginx_config_dest }}"
+        owner: root
+        group: root
+        mode: '0644'
+        backup: yes
+      register: nginx_config_copy
+      notify: restart nginx
+
+    - name: Ensure Nginx is running and enabled
+      systemd:
+        name: nginx
+        state: started
+        enabled: yes
+      register: nginx_service
+
+    - name: Test Nginx configuration
+      command: nginx -t
+      register: nginx_test
+      changed_when: false
+
+    - name: Fail if Nginx configuration is invalid
+      fail:
+        msg: "Nginx configuration test failed: {{ nginx_test.stderr }}"
+      when: nginx_test.rc != 0
+
+  handlers:
+    - name: restart nginx
+      systemd:
+        name: nginx
+        state: restarted
+      register: nginx_restart
+
+- name: Install and configure MediaMTX
+  hosts: deployed_vms
+  gather_facts: yes
+  become: yes
+  vars:
+    mediamtx_url: "{{ hostvars['localhost']['mediamtx_url'] }}"
+    mediamtx_user: "{{ hostvars['localhost']['mediamtx_user'] }}"
+    mediamtx_config_template: "{{ hostvars['localhost']['mediamtx_config_template'] }}"
+    recordings_dir: "{{ hostvars['localhost']['recordings_dir'] }}"
+    vm_ip: "{{ hostvars['localhost']['vm_ip'] }}"
+
+  tasks:
+    - name: Install dependencies for MediaMTX
+      apt:
+        name:
+          - wget
+          - tar
+          - systemd
+        state: present
+
+    - name: Ensure mediamtx user exists (idempotent)
+      user:
+        name: "{{ mediamtx_user }}"
+        system: yes
+        shell: /usr/sbin/nologin
+        home: /opt/mediamtx
+        create_home: yes
+        state: present
+      register: user_created
+
+    - name: Download MediaMTX
+      get_url:
+        url: "{{ mediamtx_url }}"
+        dest: "/tmp/mediamtx.tar.gz"
+        mode: '0644'
+        force: no
+      register: download
+
+    - name: Extract MediaMTX
+      unarchive:
+        src: "/tmp/mediamtx.tar.gz"
+        dest: "/opt/mediamtx"
+        remote_src: yes
+        creates: "/opt/mediamtx/mediamtx"
+      register: extract
+
+    - name: Deploy mediamtx.yml from Jinja2 template
+      template:
+        src: "{{ mediamtx_config_template }}"
+        dest: "/opt/mediamtx/mediamtx.yml"
+        owner: "{{ mediamtx_user }}"
+        group: "{{ mediamtx_user }}"
+        mode: '0644'
+        backup: yes
+      register: config_deploy
+      notify: restart mediamtx
+
+    - name: Set ownership of MediaMTX directory
+      file:
+        path: /opt/mediamtx
+        owner: "{{ mediamtx_user }}"
+        group: "{{ mediamtx_user }}"
+        recurse: yes
+        state: directory
+
+    - name: Make mediamtx executable
+      file:
+        path: /opt/mediamtx/mediamtx
+        mode: '0755'
+
+    - name: Ensure mediamtx user can write to recordings directory
+      file:
+        path: "{{ recordings_dir }}"
+        owner: "{{ mediamtx_user }}"
+        group: "{{ mediamtx_user }}"
+        mode: '0775'
+        state: directory
+        recurse: no
+
+    - name: Add mediamtx user to www-data group
+      user:
+        name: "{{ mediamtx_user }}"
+        groups: www-data
+        append: yes
+
+    - name: Create systemd service file for MediaMTX
+      copy:
+        dest: /etc/systemd/system/mediamtx.service
+        content: |
+          [Unit]
+          Description=MediaMTX Media Server
+          After=network.target
+
+          [Service]
+          Type=simple
+          User={{ mediamtx_user }}
+          Group={{ mediamtx_user }}
+          WorkingDirectory=/opt/mediamtx
+          ExecStart=/opt/mediamtx/mediamtx
+          Restart=on-failure
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+        mode: '0644'
+      register: service_file
+
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: yes
+      when: service_file.changed
+
+    - name: Enable and start MediaMTX service
+      systemd:
+        name: mediamtx
+        enabled: yes
+        state: started
+      register: mediamtx_service
+
+    - name: Verify MediaMTX is running
+      command: systemctl is-active mediamtx
+      register: mediamtx_status
+      changed_when: false
+
+    - name: Display MediaMTX status
+      debug:
+        msg: "MediaMTX service is {{ mediamtx_status.stdout }}"
+
+    - name: Show configured WebRTC additional host
+      debug:
+        msg: "MediaMTX configured with WebRTC additional host: {{ vm_ip }}"
+
+    - name: Display recordings directory permissions
+      debug:
+        msg: "Recordings directory {{ recordings_dir }} is owned by {{ mediamtx_user }} with write permissions"
+
+  handlers:
+    - name: restart mediamtx
+      systemd:
+        name: mediamtx
+        state: restarted
+      register: mediamtx_restart

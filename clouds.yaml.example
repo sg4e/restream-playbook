@@ -1,0 +1,10 @@
+clouds:
+  dreamcompute:
+    auth:
+      auth_url: https://iad2.dream.io:5000
+      username: <USERNAME>
+      password: <PASSWORD>
+      project_name: <PROJECT NAME>
+    region_name: RegionOne
+    interface: public
+    identity_api_version: 3

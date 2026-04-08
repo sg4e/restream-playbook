@@ -1,0 +1,3 @@
+personal/
+ssh_keys/*
+!ssh_keys/place public SSH keys here.txt

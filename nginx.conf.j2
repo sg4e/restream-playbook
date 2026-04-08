@@ -1,0 +1,25 @@
+worker_processes  1;
+
+events {
+    worker_connections  1024;
+}
+
+http {
+    include /etc/nginx/mime.types;
+
+    server {
+        listen 80;
+        server_name {{ domain }};
+
+        # Serve your WebRTC player page
+        location / {
+            root /var/www/webrtc-page;
+            index index.html;
+        }
+
+        location /vods/ {
+            alias {{ recordings_dir }}/;
+            autoindex on;
+        }
+    }
+}
