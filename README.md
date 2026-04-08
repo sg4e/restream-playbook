@@ -10,6 +10,8 @@ This playbook has been tailored to [DreamCompute](https://www.dreamhost.com/clou
 
 2. A [DreamCompute](https://www.dreamhost.com/cloud/computing/) account.
 
+3. A domain name.
+
 ## How to deploy
 
 1. Clone this repository with git.
