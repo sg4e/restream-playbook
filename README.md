@@ -34,9 +34,9 @@ MediaMTX supports many ingress protocols and codecs. You can choose any codec as
 
 Here's an example configuration in OBS. Replace `restream.koyori.club` with your domain and `sg4e` with the stream path you'd like to stream to (see below for how to watch from that path).
 
-![obs_stream.jpg](Y:\dreamcompute\screenshots\obs_stream.jpg)
+![obs_stream.jpg](screenshots/obs_stream.jpg)
 
-![obs_output.jpg](Y:\dreamcompute\screenshots\obs_output.jpg)
+![obs_output.jpg](screenshots/obs_output.jpg)
 
 ## How to watch
 
