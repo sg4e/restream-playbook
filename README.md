@@ -42,8 +42,18 @@ Here's an example configuration in OBS. Replace `restream.koyori.club` with your
 
 ## How to watch
 
-Visit `http://<YOUR DOMAIN>/?stream=<STREAM PATH>`. You can pop out multiple streams in picture-in-picture mode with some browsers like Firefox.
+Visit `https://<YOUR DOMAIN>/?stream=<STREAM PATH>`. You can pop out multiple streams in picture-in-picture mode with some browsers like Firefox.
 
-Visit `http://<YOUR DOMAIN>/bazaar.html` for a preconfigured multiview of selected streams.
+Visit `https://<YOUR DOMAIN>/bazaar.html` for a preconfigured multiview of selected streams.
 
-Vods can be downloaded from `http://<YOUR DOMAIN>/vods/`. The vod retention policy can be adjusted in the `mediamtx.yml.j2` file.
+VODs can be downloaded from `https://<YOUR DOMAIN>/vods/`. The VOD retention policy can be adjusted in the `mediamtx.yml.j2` file.
+
+## TLS automation
+
+The playbook automatically provisions and renews Let's Encrypt certificates for `domain` using a webroot challenge.
+
+- `tls_enabled` (default `true`) controls whether HTTPS is enabled in Nginx.
+- Uses Let's Encrypt with the no-email registration option (`--register-unsafely-without-email`).
+- `certbot_webroot` is used for ACME challenge files.
+
+For low-latency playback, WHEP signaling is reverse proxied through Nginx with request and response buffering disabled.

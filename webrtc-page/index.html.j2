@@ -46,7 +46,7 @@
       throw new Error('No stream parameter provided');
     }
 
-    const whepUrl = `http://{{ domain }}:8889/${stream}/whep`;
+    const whepUrl = `${window.location.origin}/${stream}/whep`;
 
     async function start() {
       try {

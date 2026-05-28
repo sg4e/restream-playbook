@@ -30,6 +30,10 @@
     nginx_config_src: "./nginx.conf.j2"
     nginx_config_dest: "/etc/nginx/nginx.conf"
 
+    # TLS / Let's Encrypt
+    tls_enabled: true
+    certbot_webroot: "/var/www/certbot"
+
     # MediaMTX Configuration
     mediamtx_version: "1.17.1"
     mediamtx_url: "https://github.com/bluenviron/mediamtx/releases/download/v{{ mediamtx_version }}/mediamtx_v{{ mediamtx_version }}_linux_amd64.tar.gz"
@@ -58,6 +62,8 @@
         domain: "{{ domain }}"
         bazaar_streams: "{{ bazaar_streams }}"
         grid_columns: "{{ grid_columns}}"
+        tls_enabled: "{{ tls_enabled }}"
+        certbot_webroot: "{{ certbot_webroot }}"
 
     - name: Check if VM already exists
       openstack.cloud.server_info:
@@ -236,13 +242,25 @@
     domain: "{{ hostvars['localhost']['domain'] }}"
     bazaar_streams: "{{ hostvars['localhost']['bazaar_streams'] }}"
     grid_columns: "{{ hostvars['localhost']['grid_columns'] }}"
+    tls_enabled: "{{ hostvars['localhost']['tls_enabled'] }}"
+    certbot_webroot: "{{ hostvars['localhost']['certbot_webroot'] }}"
 
   tasks:
-    - name: Install Nginx
+    - name: Install Nginx and Certbot
       apt:
-        name: nginx
+        name:
+          - nginx
+          - certbot
         state: present
       register: nginx_install
+
+    - name: Create webroot directory for ACME challenges
+      file:
+        path: "{{ certbot_webroot }}"
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: '0755'
 
     - name: Remove default nginx site symlink
       file:
@@ -281,7 +299,7 @@
         group: www-data
         recurse: yes
 
-    - name: Copy Nginx configuration file
+    - name: Copy initial Nginx configuration file (HTTP + ACME)
       template:
         src: "{{ nginx_config_src }}"
         dest: "{{ nginx_config_dest }}"
@@ -289,6 +307,8 @@
         group: root
         mode: '0644'
         backup: yes
+      vars:
+        tls_enabled: false
       register: nginx_config_copy
       notify: restart nginx
 
@@ -308,6 +328,32 @@
       fail:
         msg: "Nginx configuration test failed: {{ nginx_test.stderr }}"
       when: nginx_test.rc != 0
+
+    - name: Obtain Let's Encrypt certificate
+      command: >-
+        certbot certonly --webroot
+        -w {{ certbot_webroot }}
+        -d {{ domain }}
+        --register-unsafely-without-email
+        --agree-tos
+        --non-interactive
+        --keep-until-expiring
+      args:
+        creates: "/etc/letsencrypt/live/{{ domain }}/fullchain.pem"
+      when: tls_enabled | bool
+
+    - name: Deploy final Nginx configuration with TLS enabled
+      template:
+        src: "{{ nginx_config_src }}"
+        dest: "{{ nginx_config_dest }}"
+        owner: root
+        group: root
+        mode: '0644'
+        backup: yes
+      vars:
+        tls_enabled: "{{ tls_enabled | bool }}"
+      when: tls_enabled | bool
+      notify: restart nginx
 
   handlers:
     - name: restart nginx

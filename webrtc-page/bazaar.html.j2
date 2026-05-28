@@ -79,7 +79,7 @@
       const video = document.getElementById(`video-${streamName}`);
       const statusDiv = document.getElementById(`status-${streamName}`);
 
-      const whepUrl = `http://{{ domain }}:8889/${streamName}/whep`;
+      const whepUrl = `${window.location.origin}/${streamName}/whep`;
 
       try {
         const pc = new RTCPeerConnection();
