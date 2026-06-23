@@ -2,103 +2,102 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>SRS WebRTC WHEP Player</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WebRTC player</title>
   <style>
-    body {
-      margin: 0;
-      background: #111;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      height: 100vh;
-      color: white;
-      font-family: Arial, sans-serif;
-      flex-direction: column;
-    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; background: #000; overflow: hidden; }
+    body { display: flex; }
+
     video {
-      width: 80%;
-      max-width: 960px;
-      background: black;
-      border-radius: 8px;
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      object-fit: contain;
+      background: #000;
     }
+
     #status {
-      margin-top: 15px;
-      font-size: 14px;
-      color: #aaa;
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%) translateY(0);
+      background: rgba(0,0,0,0.7);
+      backdrop-filter: blur(8px);
+      color: #ccc;
+      font: 13px/1.4 system-ui, -apple-system, sans-serif;
+      padding: 8px 20px;
+      border-radius: 100px;
+      border: 1px solid rgba(255,255,255,0.08);
+      pointer-events: none;
+      user-select: none;
+      white-space: nowrap;
+      transition: opacity 0.5s ease, transform 0.5s ease;
+    }
+    #status.error {
+      color: #ff6b6b;
+      border-color: rgba(255,107,107,0.25);
     }
   </style>
 </head>
 <body>
 
+  <div id="status">Connecting…</div>
   <video id="video" autoplay playsinline controls></video>
-  <div id="status">Connecting...</div>
 
   <script>
-    const video = document.getElementById('video');
-    const statusDiv = document.getElementById('status');
+    (async () => {
+      const video = document.getElementById('video');
+      const status = document.getElementById('status');
 
-    // Get stream value from URL query parameter
-    const urlParams = new URLSearchParams(window.location.search);
-    const stream = urlParams.get('stream');
+      const stream = new URLSearchParams(location.search).get('stream');
+      if (!stream) {
+        status.textContent = 'No stream parameter provided';
+        status.className = 'error';
+        return;
+      }
 
-    if (!stream) {
-      statusDiv.textContent = 'Error: No stream parameter provided';
-      throw new Error('No stream parameter provided');
-    }
+      document.title = stream + ' stream';
 
-    const whepUrl = `http://{{ domain }}:8889/${stream}/whep`;
+      let hideTimer;
 
-    async function start() {
+      function showStatus(msg, cls) {
+        status.textContent = msg;
+        status.className = cls || '';
+        status.style.opacity = '1';
+        status.style.transform = 'translateX(-50%) translateY(0)';
+        clearTimeout(hideTimer);
+        hideTimer = setTimeout(() => {
+          status.style.opacity = '0';
+          status.style.transform = 'translateX(-50%) translateY(8px)';
+        }, 5000);
+      }
+
       try {
         const pc = new RTCPeerConnection();
-
-        pc.ontrack = (event) => {
-          video.srcObject = event.streams[0];
-        };
-
+        pc.ontrack = e => { video.srcObject = e.streams[0]; };
         pc.onconnectionstatechange = () => {
-          statusDiv.textContent = "Connection state: " + pc.connectionState;
+          showStatus(pc.connectionState === 'connected' ? 'Connected' : 'Connection: ' + pc.connectionState);
         };
 
-        // Create offer
-        const offer = await pc.createOffer({
-          offerToReceiveAudio: true,
-          offerToReceiveVideo: true
-        });
-
+        const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
         await pc.setLocalDescription(offer);
+        showStatus('Negotiating…');
 
-        // Send offer to SRS WHEP endpoint
-        const response = await fetch(whepUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/sdp"
-          },
+        const res = await fetch(`http://{{ domain }}:8889/${stream}/whep`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/sdp' },
           body: offer.sdp
         });
+        if (!res.ok) throw new Error('WHEP request failed: ' + res.status);
 
-        if (!response.ok) {
-          throw new Error("WHEP request failed: " + response.status);
-        }
-
-        const answerSdp = await response.text();
-
-        await pc.setRemoteDescription({
-          type: "answer",
-          sdp: answerSdp
-        });
-
-        statusDiv.textContent = "Connected";
+        await pc.setRemoteDescription({ type: 'answer', sdp: await res.text() });
+        showStatus('Connected');
       } catch (err) {
         console.error(err);
-        statusDiv.textContent = "Error: " + err.message;
+        showStatus(err.message, 'error');
       }
-    }
-
-    // Only start if stream parameter is provided
-    if (stream) {
-      start();
-    }
+    })();
   </script>
 
 </body>
